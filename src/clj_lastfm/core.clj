@@ -90,13 +90,13 @@
 (defn- get-data [params]
   (let [url (create-url params)
         data (-> url get-url read-json keywordize-keys)]
-  (if (-> data :error nil?)
-    data
-    (throw (IllegalArgumentException. (-> data :message str))))))
+    (if (-> data :error nil?)
+      data
+      (throw (IllegalArgumentException. (-> data :message str))))))
 
 (defn- create-get-obj-fn [fixed-params parse-fn]
   (fn [more-params]
-    (parse-fn (get-data (merge fixed-params more-params)))))
+    (parse-fn #(get-data (merge fixed-params more-params)))))
 
 (defn- create-get-obj-field-fn [create-obj-fn extract-obj-id-fields-fn]
   (fn [obj field-kw]
@@ -106,13 +106,14 @@
         field-val))))
 
 (defn- create-parse-one-or-more-fn [parse-one-fn extractor-fn]
-  (fn [data]
-    (let [one-or-more (extractor-fn data)]
-      (do
-        (debug (str "parsing: " data))
-        (if (map? one-or-more)
-          (vector (parse-one-fn one-or-more))
-          (vec (map parse-one-fn one-or-more)))))))
+  (fn [data-fn]
+    (lazy-seq
+      (let [data (data-fn) one-or-more (extractor-fn data)]
+        (do
+          (debug (str "parsing: " data))
+          (if (map? one-or-more)
+            (vector (parse-one-fn one-or-more))
+            (vec (map parse-one-fn one-or-more))))))))
 
 (defn- create-parse-string-or-list-fn [obj-from-name-fn extractor-fn]
   (fn [data]
@@ -229,13 +230,14 @@
 
 ;;;;;;;;;; artist.getinfo ;;;;;;;;;;
 
-(defn- parse-artist-getinfo [data]
-  (do
-    (debug (str "parse-artist-getinfo: " data))
-    (-> data :artist parse-artist)))
+(defn- parse-artist-getinfo [data-fn]
+  (let [data (data-fn)]
+    (do
+      (debug (str "parse-artist-getinfo: " data))
+      (-> data :artist parse-artist))))
 
-(def #^{:private true}
-  get-artist (create-get-obj-fn {:method "artist.getinfo"} parse-artist-getinfo))
+(def #^{:private true} get-artist
+  (create-get-obj-fn {:method "artist.getinfo"} parse-artist-getinfo))
 
 (defmulti artist
   (fn [artist-or-mbid & _]
@@ -417,15 +419,17 @@
 
 (declare get-artist-pastevents)
 
-(defn- parse-artist-pastevents [data]
-  (let [pages (-> data :events attr-kw :totalPages safe-parse-int)
-        page (-> data :events attr-kw :page safe-parse-int)
-        artist-name (-> data :events attr-kw :artist)]
-    (if (= page pages)
-      (parse-artist-events data)
-      (lazy-cat
-        (parse-artist-events data)
-        (get-artist-pastevents {:artist artist-name :page (inc page)})))))
+(defn- parse-artist-pastevents [data-fn]
+  (lazy-seq
+    (let [data (data-fn)
+          pages (-> data :events attr-kw :totalPages safe-parse-int)
+          page (-> data :events attr-kw :page safe-parse-int)
+          artist-name (-> data :events attr-kw :artist)]
+      (if (= page pages)
+        (parse-artist-events data-fn)
+        (lazy-cat
+          (parse-artist-events data-fn)
+          (get-artist-pastevents {:artist artist-name :page (inc page)}))))))
 
 (defn- get-artist-pastevents
   ([params]
