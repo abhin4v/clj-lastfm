@@ -79,7 +79,8 @@
 
 ;;;;;;;;;; forward declaration ;;;;;;;;;;
 
-(declare bio-struct artist-struct tag-struct album-struct user-struct)
+(declare bio-struct artist-struct tag-struct album-struct user-struct
+  track-struct)
 
 ;;;;;;;;;; Bio/Wiki ;;;;;;;;;;
 
@@ -244,6 +245,38 @@
 (defmethod artist-topfans :name [artist-name]
   (get-artist-topfans {:artist artist-name}))
 
+;;;;;;;;;; artist.gettoptracks ;;;;;;;;;;
+
+(defn- parse-artist-toptracks [data]
+  (do
+    (debug (str "parse-artist-toptracks: " data))
+    (vec
+      (map
+        #(struct-map track-struct
+          :name (% :name)
+          :url (% :url)
+          :mbid (% :mbid)
+          :artist (struct-map artist-struct
+                    :name (-> % :artist :name)
+                    :url (-> % :artist :url)
+                    :mbid (-> % :artist :mbid))
+          :playcount (-> % :playcount parseInt)
+          :listeners (-> % :listeners parseInt)
+          :streamable (= 1 (-> % :streamable :#text parseInt))
+          :streamable-full (= 1 (-> % :streamable :fulltrack parseInt)))
+        (-> data :toptracks :track)))))
+
+(def #^{:private true} get-artist-toptracks
+  (create-get-obj-fn {:method "artist.gettoptracks"} parse-artist-toptracks))
+
+(defmulti artist-toptracks artist-or-name)
+
+(defmethod artist-toptracks :artist [artst]
+  (-> artst :name artist-toptracks))
+
+(defmethod artist-toptracks :name [artist-name]
+  (get-artist-toptracks {:artist artist-name}))
+
 ;;;;;;;;;; Tag ;;;;;;;;;;
 
 (defstruct tag-struct :name :url)
@@ -251,6 +284,11 @@
 ;;;;;;;;;; Album ;;;;;;;;;;
 
 (defstruct album-struct :name :url :mbid :artist :playcount)
+
+;;;;;;;;;; Track ;;;;;;;;;;
+
+(defstruct track-struct
+  :name :url :mbid :artist :playcount :listeners :streamable)
 
 ;;;;;;;;;; User ;;;;;;;;;;
 
