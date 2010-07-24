@@ -3,15 +3,14 @@
            (java.text SimpleDateFormat)
            (java.util TimeZone))
   (:use [clj-lastfm.filecache]
+        [clojure.contrib.def :only (defstruct- defvar-)]
         [clojure.contrib.json.read :only (read-json)]
-        [clojure.walk :only (keywordize-keys)]
-        [clojure.contrib.import-static]
-        [clojure.contrib.logging]))
+        [clojure.contrib.logging]
+        [clojure.walk :only (keywordize-keys)]))
 
 ;;;;;;;;;; Basic ;;;;;;;;;;
 
-(def #^{:private true}
-  api-root-url ["http" "ws.audioscrobbler.com" "/2.0/"])
+(defvar- api-root-url ["http" "ws.audioscrobbler.com" "/2.0/"])
 
 (defn- api-key []
   (let [lastfm-api-key (resolve '*lastfm-api-key*)]
@@ -19,10 +18,13 @@
       (throw (IllegalStateException. "lastfm API key is not set"))
       lastfm-api-key)))
 
-(def #^{:private true} guid-pattern
-  #"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+(defvar- guid-pattern
+  (let [an "[0-9a-fA-F]"]
+    (re-pattern (str "^" an "{8}-" an "{4}-" an "{4}-" an "{4}-" an "{12}$"))))
 
-(def #^{:private true} attr-kw (keyword "@attr"))
+(defn- mbid? [s] (if (re-matches guid-pattern s) true false))
+
+(defvar- attr-kw (keyword "@attr"))
 
 (defn- safe-parse-int [n]
   (if (nil? n)
@@ -40,6 +42,8 @@
 
 (defn- str-1? [n] (-> n safe-parse-int (= 1)))
 
+(defn- blank? [s] (every? #(Character/isWhitespace #^Character %) s))
+
 (defn- struct? [obj] (instance? clojure.lang.PersistentStructMap obj))
 
 (def #^{:private true :tag SimpleDateFormat} sdftz
@@ -51,13 +55,15 @@
     (.setTimeZone (TimeZone/getTimeZone "GMT"))))
 
 (defn- parse-date [date-str]
-  (try
-    (.parse sdftz date-str)
-    (catch java.text.ParseException e
-      (.parse sdf date-str))))
+  (if (some #(% date-str) [nil? blank?])
+    nil
+    (try
+      (.parse sdftz date-str)
+      (catch java.text.ParseException e
+        (.parse sdf date-str)))))
 
 (defn- remove-nil-values [m]
-  (apply hash-map (apply concat (filter #(not (nil? (fnext %))) m))))
+  (apply hash-map (apply concat (filter #(-> % fnext nil? not) m))))
 
 (defn- lastfm-url [path]
   (.toString (URI. "http" "www.last.fm" path nil nil)))
@@ -80,7 +86,7 @@
           (merge query-params {:api_key @(api-key) :format "json"}))
         nil))))
 
-(def #^{:private true} default-cache (create-file-cache))
+(defvar- default-cache (create-file-cache))
 
 (defn- get-url
   ([url] (get-url url default-cache))
@@ -160,7 +166,7 @@
 
 ;;;;;;;;;; Bio/Wiki ;;;;;;;;;;
 
-(defstruct bio-struct :published :summary :content)
+(defstruct- bio-struct :published :summary :content)
 
 (defn- parse-bio [data]
   (do
@@ -173,7 +179,7 @@
 
 ;;;;;;;;;; Location ;;;;;;;;;;
 
-(defstruct location-struct
+(defstruct- location-struct
   :latitude :longitude :street :postalcode :city :country)
 
 (defn- parse-location [data]
@@ -189,7 +195,7 @@
 
 ;;;;;;;;;; Venue ;;;;;;;;;;
 
-(defstruct venue-struct
+(defstruct- venue-struct
   :id :name :location :url :website :phonenumber)
 
 (defn- parse-venue [data]
@@ -205,15 +211,15 @@
 
 ;;;;;;;;;; Event ;;;;;;;;;;
 
-(defstruct event-struct
+(defstruct- event-struct
   :id :title :artists :headliner :venue :start :description
   :attendence :reviews :tag :url :website :cancelled :tags)
 
-(def #^{:private true} parse-event-artists
+(defvar- parse-event-artists
   (create-parse-string-or-list-fn
     #(artist-from-name %) #(-> % :artists :artist)))
 
-(def #^{:private true} parse-event-tags
+(defvar- parse-event-tags
   (create-parse-string-or-list-fn
     #(tag-from-name %) #(-> % :tags :tag)))
 
@@ -238,7 +244,7 @@
 
 ;;;;;;;;;; Shout ;;;;;;;;;;
 
-(defstruct shout-struct :body :author :date)
+(defstruct- shout-struct :body :author :date)
 
 (defn- parse-shout [data]
   (do
@@ -250,7 +256,7 @@
 
 ;;;;;;;;;; Artist ;;;;;;;;;;
 
-(defstruct artist-struct
+(defstruct- artist-struct
   :name :url :mbid :streamable :listeners :playcount :bio)
 
 (defn- parse-artist [data]
@@ -277,12 +283,12 @@
       (debug (str "parse-artist-getinfo: " data))
       (-> data :artist parse-artist))))
 
-(def #^{:private true} get-artist
+(defvar- get-artist
   (create-get-obj-fn {:method "artist.getinfo"} parse-artist-getinfo))
 
 (defmulti artist
   (fn [artist-or-mbid & _]
-    (if (re-matches guid-pattern artist-or-mbid) :mbid :artist)))
+    (if (mbid? artist-or-mbid) :mbid :artist)))
 
 (defmethod artist :artist
   ([artist-name] (artist artist-name nil nil))
@@ -309,12 +315,12 @@
     :streamable (-> data :streamable str-1?)
     :match (-> data :match safe-parse-double)))
 
-(def #^{:private true} parse-artist-similar
+(defvar- parse-artist-similar
   (create-parse-one-or-more-fn
     parse-artist-similar-1
     #(-> % :similarartists :artist)))
 
-(def #^{:private true} get-artist-similar
+(defvar- get-artist-similar
   (create-get-obj-fn
     {:method "artist.getsimilar"} parse-artist-similar))
 
@@ -335,12 +341,12 @@
 
 ;;;;;;;;;; artist.gettoptags ;;;;;;;;;;
 
-(def #^{:private true} parse-artist-toptags
+(defvar- parse-artist-toptags
   (create-parse-one-or-more-fn
     #(struct tag-struct (% :name) (% :url))
     #(-> % :toptags :tag)))
 
-(def #^{:private true} get-artist-toptags
+(defvar- get-artist-toptags
   (create-get-obj-fn
     {:method "artist.gettoptags"} parse-artist-toptags))
 
@@ -366,12 +372,12 @@
     :playcount (-> data :playcount safe-parse-int)
     :rank (-> data attr-kw :rank safe-parse-int)))
 
-(def #^{:private true} parse-artist-topalbums
+(defvar- parse-artist-topalbums
   (create-parse-one-or-more-fn
     parse-artist-topalbums-1
     #(-> % :topalbums :album)))
 
-(def #^{:private true} get-artist-topalbums
+(defvar- get-artist-topalbums
   (create-get-obj-fn
     {:method "artist.gettopalbums"} parse-artist-topalbums))
 
@@ -392,12 +398,12 @@
     :realname (data :realname)
     :weight (-> data :weight safe-parse-int)))
 
-(def #^{:private true} parse-artist-topfans
+(defvar- parse-artist-topfans
   (create-parse-one-or-more-fn
     parse-artist-topfans-1
     #(-> % :topfans :user)))
 
-(def #^{:private true} get-artist-topfans
+(defvar- get-artist-topfans
   (create-get-obj-fn
     {:method "artist.gettopfans"} parse-artist-topfans))
 
@@ -425,12 +431,12 @@
     :streamable (-> data :streamable :#text str-1?)
     :streamable-full (-> data :streamable :fulltrack str-1?)))
 
-(def #^{:private true} parse-artist-toptracks
+(defvar- parse-artist-toptracks
   (create-parse-one-or-more-fn
     parse-artist-toptracks-1
     #(-> % :toptracks :track)))
 
-(def #^{:private true} get-artist-toptracks
+(defvar- get-artist-toptracks
   (create-get-obj-fn
     {:method "artist.gettoptracks"} parse-artist-toptracks))
 
@@ -444,12 +450,12 @@
 
 ;;;;;;;;;; artist.getevents ;;;;;;;;;;
 
-(def #^{:private true} parse-artist-events
+(defvar- parse-artist-events
   (create-parse-one-or-more-fn
     parse-event
     #(-> % :events :event)))
 
-(def #^{:private true} get-artist-events
+(defvar- get-artist-events
   (create-get-obj-fn
     {:method "artist.getevents"} parse-artist-events))
 
@@ -465,14 +471,14 @@
 
 (declare get-artist-pastevents)
 
-(def #^{:private true} parse-artist-pastevents
+(defvar- parse-artist-pastevents
   (create-paged-parse-fn
     #(-> % :events attr-kw)
     #(hash-map :artist (-> % :events attr-kw :artist))
     parse-artist-events
     #(get-artist-pastevents %)))
 
-(def #^{:private true} get-artist-pastevents
+(defvar- get-artist-pastevents
   (create-paged-get-obj-fn
     {:method "artist.getpastevents"}
     parse-artist-pastevents))
@@ -493,19 +499,19 @@
 
 (declare get-artist-shouts)
 
-(def #^{:private true} parse-artist-shouts-unpaged
+(defvar- parse-artist-shouts-unpaged
   (create-parse-one-or-more-fn
     parse-shout
     #(-> % :shouts :shout)))
 
-(def #^{:private true} parse-artist-shouts
+(defvar- parse-artist-shouts
   (create-paged-parse-fn
     #(-> % :shouts attr-kw)
     #(hash-map :artist (-> % :shouts attr-kw :artist))
     parse-artist-shouts-unpaged
     #(get-artist-shouts %)))
 
-(def #^{:private true} get-artist-shouts
+(defvar- get-artist-shouts
   (create-paged-get-obj-fn
     {:method "artist.getshouts"}
     parse-artist-shouts))
@@ -524,23 +530,23 @@
 
 ;;;;;;;;;; Tag ;;;;;;;;;;
 
-(defstruct tag-struct :name :url)
+(defstruct- tag-struct :name :url)
 
 (defn- tag-from-name [tag-name]
   (struct tag-struct tag-name (lastfm-url (str "/tag/" tag-name))))
 
 ;;;;;;;;;; Album ;;;;;;;;;;
 
-(defstruct album-struct :name :url :mbid :artist :playcount)
+(defstruct- album-struct :name :url :mbid :artist :playcount)
 
 ;;;;;;;;;; Track ;;;;;;;;;;
 
-(defstruct track-struct
+(defstruct- track-struct
   :name :url :mbid :artist :playcount :listeners :streamable)
 
 ;;;;;;;;;; User ;;;;;;;;;;
 
-(defstruct user-struct :name :url :realname)
+(defstruct- user-struct :name :url :realname)
 
 (defn- user-from-name [user-name]
   (struct-map user-struct :name user-name))
