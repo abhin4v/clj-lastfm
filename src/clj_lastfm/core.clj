@@ -38,11 +38,11 @@
 
 (defn- struct? [obj] (instance? clojure.lang.PersistentStructMap obj))
 
-(def #^{:private true} sdftz
+(def #^{:private true :tag SimpleDateFormat} sdftz
   (doto (SimpleDateFormat. "EEE, dd MMMM yyyy HH:mm:ss +0000")
     (.setTimeZone (TimeZone/getTimeZone "GMT"))))
 
-(def #^{:private true} sdf
+(def #^{:private true :tag SimpleDateFormat} sdf
   (doto (SimpleDateFormat. "EEE, dd MMMM yyyy HH:mm:ss")
     (.setTimeZone (TimeZone/getTimeZone "GMT"))))
 
@@ -65,7 +65,7 @@
 
 (defn- create-url [query-params]
   (.toURL
-    (apply
+    (#^URI apply
       #(URI. %1 %2 %3 %4 %5)
       (conj
         api-root-url
@@ -87,7 +87,7 @@
         data (-> url get-url read-json keywordize-keys)]
   (if (-> data :error nil?)
     data
-    (throw (IllegalArgumentException. (data :message))))))
+    (throw (IllegalArgumentException. (-> data :message str))))))
 
 (defn- create-get-obj-fn [fixed-params parse-fn]
   (fn [more-params]
