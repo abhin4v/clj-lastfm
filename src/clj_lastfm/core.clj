@@ -8,9 +8,6 @@
         [clojure.contrib.import-static]
         [clojure.contrib.logging]))
 
-(import-static java.lang.Integer parseInt)
-(import-static java.lang.Double parseDouble)
-
 ;;;;;;;;;; Basic ;;;;;;;;;;
 
 (def #^{:private true}
@@ -25,12 +22,35 @@
 (def #^{:private true} guid-pattern
   #"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 
-(def #^{:private true} sdf
+(defn- safe-parse-int [n]
+  (if (nil? n)
+    nil
+    (try
+      (Integer/parseInt n)
+      (catch NumberFormatException nfe nil))))
+
+(defn- safe-parse-double [n]
+  (if (nil? n)
+    nil
+    (try
+      (Double/parseDouble n)
+      (catch NumberFormatException nfe nil))))
+
+(defn- struct? [obj] (instance? clojure.lang.PersistentStructMap obj))
+
+(def #^{:private true} sdftz
   (doto (SimpleDateFormat. "EEE, dd MMMM yyyy HH:mm:ss +0000")
     (.setTimeZone (TimeZone/getTimeZone "GMT"))))
 
+(def #^{:private true} sdf
+  (doto (SimpleDateFormat. "EEE, dd MMMM yyyy HH:mm:ss")
+    (.setTimeZone (TimeZone/getTimeZone "GMT"))))
+
 (defn- parse-date [date-str]
-  (.parse sdf date-str))
+  (try
+    (.parse sdftz date-str)
+    (catch java.text.ParseException e
+      (.parse sdf date-str))))
 
 (defn- remove-nil-values [m]
   (apply hash-map (apply concat (filter #(not (nil? (fnext %))) m))))
@@ -63,8 +83,11 @@
       (get-file-content cache url))))
 
 (defn- get-data [params]
-  (let [url (create-url params)]
-    (-> url get-url read-json keywordize-keys)))
+  (let [url (create-url params)
+        data (-> url get-url read-json keywordize-keys)]
+  (if (-> data :error nil?)
+    data
+    (throw (IllegalArgumentException. (data :message))))))
 
 (defn- create-get-obj-fn [fixed-params parse-fn]
   (fn [more-params]
@@ -77,10 +100,28 @@
         ((apply create-obj-fn (extract-obj-id-fields-fn obj)) field-kw)
         field-val))))
 
+(defn- create-parse-one-or-more-fn [parse-one-fn extractor-fn]
+  (fn [data]
+    (let [one-or-more (extractor-fn data)]
+      (do
+        (debug (str "parsing: " data))
+        (if (map? one-or-more)
+          (vector (parse-one-fn one-or-more))
+          (vec (map parse-one-fn one-or-more)))))))
+
+(defn- create-parse-string-or-list-fn [obj-from-name-fn extractor-fn]
+  (fn [data]
+    (let [string-or-list (extractor-fn data)]
+      (if (string? string-or-list)
+        (vector (obj-from-name-fn string-or-list))
+        (vec (map obj-from-name-fn string-or-list))))))
+
 ;;;;;;;;;; forward declaration ;;;;;;;;;;
 
 (declare bio-struct artist-struct tag-struct album-struct user-struct
-  track-struct)
+  track-struct event-struct venue-struct location-struct)
+
+(declare artist-from-name tag-from-name)
 
 ;;;;;;;;;; Bio/Wiki ;;;;;;;;;;
 
@@ -92,8 +133,73 @@
     (struct
       bio-struct
       (-> data :published parse-date)
-      (-> data :summary)
-      (-> data :content))))
+      (data :summary)
+      (data :content))))
+
+;;;;;;;;;; Location ;;;;;;;;;;
+
+(defstruct location-struct
+  :latitude :longitude :street :postalcode :city :country)
+
+(defn- parse-location [data]
+  (do
+    (debug (str "parse-location: " data))
+    (struct location-struct
+      (-> data :geo:point :geo:lat safe-parse-double)
+      (-> data :geo:point :geo:long safe-parse-double)
+      (data :street)
+      (data :postalcode)
+      (data :city)
+      (data :country))))
+
+;;;;;;;;;; Venue ;;;;;;;;;;
+
+(defstruct venue-struct
+  :id :name :location :url :website :phonenumber)
+
+(defn- parse-venue [data]
+  (do
+    (debug (str "parse-venue: " data))
+    (struct venue-struct
+      (data :id)
+      (data :name)
+      (-> data :location parse-location)
+      (data :url)
+      (data :website)
+      (data :phonenumber))))
+
+;;;;;;;;;; Event ;;;;;;;;;;
+
+(defstruct event-struct
+  :id :title :artists :headliner :venue :start :description
+  :attendence :reviews :tag :url :website :cancelled :tags)
+
+(def #^{:private true} parse-event-artists
+  (create-parse-string-or-list-fn
+    #(artist-from-name %) #(-> % :artists :artist)))
+
+(def #^{:private true} parse-event-tags
+  (create-parse-string-or-list-fn
+    #(tag-from-name %) #(-> % :tags :tag)))
+
+(defn- parse-event [data]
+  (do
+    (debug (str "parse-event: " data))
+    (struct event-struct
+      (data :id)
+      (data :title)
+      (parse-event-artists data)
+      (artist-from-name (-> data :artists :headliner))
+      (-> data :venue parse-venue)
+      (-> data :startDate parse-date)
+      (data :description)
+      (-> data :attendence safe-parse-int)
+      (-> data :reviews safe-parse-int)
+      (data :tag)
+      (data :url)
+      (data :website)
+      (= 1 (-> data :cancelled safe-parse-int))
+      (parse-event-tags data))))
 
 ;;;;;;;;;; Artist ;;;;;;;;;;
 
@@ -105,18 +211,26 @@
     (debug (str "parse-artist: " data))
     (struct
       artist-struct
-      (-> data :artist :name)
-      (-> data :artist :url)
-      (-> data :artist :mbid)
-      (= 1 (-> data :artist :streamable parseInt))
-      (-> data :artist :stats :listeners parseInt)
-      (-> data :artist :stats :playcount parseInt)
-      (-> data :artist :bio parse-bio))))
+      (data :name)
+      (data :artist :url)
+      (data :mbid)
+      (= 1 (-> data :streamable safe-parse-int))
+      (-> data :stats :listeners safe-parse-int)
+      (-> data :stats :playcount safe-parse-int)
+      (-> data :bio parse-bio))))
+
+(defn- artist-from-name [artst-name]
+  (struct-map artist-struct :name artst-name))
 
 ;;;;;;;;;; artist.getinfo ;;;;;;;;;;
 
+(defn- parse-artist-getinfo [data]
+  (do
+    (debug (str "parse-artist-getinfo: " data))
+    (-> data :artist parse-artist)))
+
 (def #^{:private true}
-  get-artist (create-get-obj-fn {:method "artist.getinfo"} parse-artist))
+  get-artist (create-get-obj-fn {:method "artist.getinfo"} parse-artist-getinfo))
 
 (defmulti artist
   (fn [artist-or-mbid & _]
@@ -139,25 +253,24 @@
 
 ;;;;;;;;;; artist.getsimilar ;;;;;;;;;;
 
-(defn- parse-artist-similar [data]
-  (do
-    (debug (str "parse-artist-similar: " data))
-    (vec
-      (map
-        #(struct-map artist-struct
-          :name (% :name)
-          :url (% :url)
-          :mbid (% :mbid)
-          :streamable (= 1 (-> % :streamable parseInt))
-          :match (-> % :match parseDouble))
-        (-> data :similarartists :artist)))))
+(defn- parse-artist-similar-1 [data]
+  (struct-map artist-struct
+    :name (data :name)
+    :url (data :url)
+    :mbid (data :mbid)
+    :streamable (= 1 (-> data :streamable safe-parse-int))
+    :match (-> data :match safe-parse-double)))
+
+(def #^{:private true} parse-artist-similar
+  (create-parse-one-or-more-fn
+    parse-artist-similar-1
+    #(-> % :similarartists :artist)))
 
 (def #^{:private true} get-artist-similar
   (create-get-obj-fn {:method "artist.getsimilar"} parse-artist-similar))
 
 (defn- artist-or-name [artst-or-name & _]
-    (if (instance? clojure.lang.PersistentStructMap artst-or-name)
-      :artist :name))
+    (if (struct? artst-or-name) :artist :name))
 
 (defmulti artist-similar artist-or-name)
 
@@ -173,11 +286,11 @@
 
 ;;;;;;;;;; artist.gettoptags ;;;;;;;;;;
 
-(defn- parse-artist-toptags [data]
-  (do
-    (debug (str "parse-artist-toptags: " data))
-    (vec (map #(struct tag-struct (% :name) (% :url))
-               (-> data :toptags :tag)))))
+
+(def #^{:private true} parse-artist-toptags
+  (create-parse-one-or-more-fn
+    #(struct tag-struct (% :name) (% :url))
+    #(-> % :toptags :tag)))
 
 (def #^{:private true} get-artist-toptags
   (create-get-obj-fn {:method "artist.gettoptags"} parse-artist-toptags))
@@ -192,22 +305,22 @@
 
 ;;;;;;;;;; artist.gettopalbums ;;;;;;;;;;
 
-(defn- parse-artist-topalbums [data]
-  (do
-    (debug (str "parse-artist-topalbums: " data))
-    (vec
-      (map
-        #(struct-map album-struct
-          :name (% :name)
-          :url (% :url)
-          :mbid (% :mbid)
-          :artist (struct-map artist-struct
-                    :name (-> % :artist :name)
-                    :url (-> % :artist :url)
-                    :mbid (-> % :artist :mbid))
-          :playcount (-> % :playcount parseInt)
-          :rank (parseInt ((% (keyword "@attr")) :rank)))
-        (-> data :topalbums :album)))))
+(defn- parse-artist-topalbums-1 [data]
+  (struct-map album-struct
+    :name (data :name)
+    :url (data :url)
+    :mbid (data :mbid)
+    :artist (struct-map artist-struct
+              :name (-> data :artist :name)
+              :url (-> data :artist :url)
+              :mbid (-> data :artist :mbid))
+    :playcount (-> data :playcount safe-parse-int)
+    :rank (safe-parse-int ((data (keyword "@attr")) :rank))))
+
+(def #^{:private true} parse-artist-topalbums
+  (create-parse-one-or-more-fn
+    parse-artist-topalbums-1
+    #(-> % :topalbums :album)))
 
 (def #^{:private true} get-artist-topalbums
   (create-get-obj-fn {:method "artist.gettopalbums"} parse-artist-topalbums))
@@ -222,17 +335,17 @@
 
 ;;;;;;;;;; artist.gettopfans ;;;;;;;;;;
 
-(defn- parse-artist-topfans [data]
-  (do
-    (debug (str "parse-artist-topfans: " data))
-    (vec
-      (map
-        #(struct-map user-struct
-          :name (% :name)
-          :url (% :url)
-          :realname (% :realname)
-          :weight (-> % :weight parseInt))
-        (-> data :topfans :user)))))
+(defn- parse-artist-topfans-1 [data]
+  (struct-map user-struct
+    :name (data :name)
+    :url (data :url)
+    :realname (data :realname)
+    :weight (-> data :weight safe-parse-int)))
+
+(def #^{:private true} parse-artist-topfans
+  (create-parse-one-or-more-fn
+    parse-artist-topfans-1
+    #(-> % :topfans :user)))
 
 (def #^{:private true} get-artist-topfans
   (create-get-obj-fn {:method "artist.gettopfans"} parse-artist-topfans))
@@ -247,24 +360,24 @@
 
 ;;;;;;;;;; artist.gettoptracks ;;;;;;;;;;
 
-(defn- parse-artist-toptracks [data]
-  (do
-    (debug (str "parse-artist-toptracks: " data))
-    (vec
-      (map
-        #(struct-map track-struct
-          :name (% :name)
-          :url (% :url)
-          :mbid (% :mbid)
-          :artist (struct-map artist-struct
-                    :name (-> % :artist :name)
-                    :url (-> % :artist :url)
-                    :mbid (-> % :artist :mbid))
-          :playcount (-> % :playcount parseInt)
-          :listeners (-> % :listeners parseInt)
-          :streamable (= 1 (-> % :streamable :#text parseInt))
-          :streamable-full (= 1 (-> % :streamable :fulltrack parseInt)))
-        (-> data :toptracks :track)))))
+(defn- parse-artist-toptracks-1 [data]
+  (struct-map track-struct
+    :name (data :name)
+    :url (data :url)
+    :mbid (data :mbid)
+    :artist (struct-map artist-struct
+              :name (-> data :artist :name)
+              :url (-> data :artist :url)
+              :mbid (-> data :artist :mbid))
+    :playcount (-> data :playcount safe-parse-int)
+    :listeners (-> data :listeners safe-parse-int)
+    :streamable (= 1 (-> data :streamable :#text safe-parse-int))
+    :streamable-full (= 1 (-> data :streamable :fulltrack safe-parse-int))))
+
+(def #^{:private true} parse-artist-toptracks
+  (create-parse-one-or-more-fn
+    parse-artist-toptracks-1
+    #(-> % :toptracks :track)))
 
 (def #^{:private true} get-artist-toptracks
   (create-get-obj-fn {:method "artist.gettoptracks"} parse-artist-toptracks))
@@ -277,9 +390,33 @@
 (defmethod artist-toptracks :name [artist-name]
   (get-artist-toptracks {:artist artist-name}))
 
+
+;;;;;;;;;; artist.getevents ;;;;;;;;;;
+
+(def #^{:private true} parse-artist-events
+  (create-parse-one-or-more-fn
+    parse-event
+    #(-> % :events :event)))
+
+(def #^{:private true} get-artist-events
+  (create-get-obj-fn {:method "artist.getevents"} parse-artist-events))
+
+(defmulti artist-events artist-or-name)
+
+(defmethod artist-events :artist [artst]
+  (-> artst :name artist-events))
+
+(defmethod artist-events :name [artist-name]
+  (get-artist-events {:artist artist-name}))
+
 ;;;;;;;;;; Tag ;;;;;;;;;;
 
 (defstruct tag-struct :name :url)
+
+(defn- tag-from-name [tag-name]
+  (struct tag-struct 
+    tag-name 
+    (.toString (URI. "http" "www.last.fm" (str "/tag/" tag-name) nil nil))))
 
 ;;;;;;;;;; Album ;;;;;;;;;;
 
