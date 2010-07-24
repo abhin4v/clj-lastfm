@@ -38,6 +38,8 @@
       (Double/parseDouble n)
       (catch NumberFormatException nfe nil))))
 
+(defn- str-1? [n] (-> n safe-parse-int (= 1)))
+
 (defn- struct? [obj] (instance? clojure.lang.PersistentStructMap obj))
 
 (def #^{:private true :tag SimpleDateFormat} sdftz
@@ -98,6 +100,15 @@
   (fn [more-params]
     (parse-fn #(get-data (merge fixed-params more-params)))))
 
+(defn- create-paged-get-obj-fn [fixed-params parse-fn]
+  (fn
+    ([more-params]
+      ((create-get-obj-fn fixed-params parse-fn)
+        more-params))
+    ([more-params page]
+      ((create-get-obj-fn fixed-params parse-fn)
+        (assoc more-params :page page)))))
+
 (defn- create-get-obj-field-fn [create-obj-fn extract-obj-id-fields-fn]
   (fn [obj field-kw]
     (let [field-val (obj field-kw)]
@@ -122,12 +133,28 @@
         (vector (obj-from-name-fn string-or-list))
         (vec (map obj-from-name-fn string-or-list))))))
 
+(defn- create-paged-parse-fn
+  [page-meta-extractor-fn param-extractor-fn parse-unpaged-fn get-fn]
+  (fn [data-fn]
+    (lazy-seq
+      (let [data (data-fn)
+            pages (-> data page-meta-extractor-fn
+                    :totalPages safe-parse-int)
+            page (-> data page-meta-extractor-fn
+                    :page safe-parse-int)
+            params (param-extractor-fn data)]
+        (if (= page pages)
+          (parse-unpaged-fn data-fn)
+          (lazy-cat
+            (parse-unpaged-fn data-fn)
+            (get-fn (merge params {:page (inc page)}))))))))
+
 ;;;;;;;;;; forward declaration ;;;;;;;;;;
 
 (declare bio-struct artist-struct tag-struct album-struct user-struct
-  track-struct event-struct venue-struct location-struct)
+  track-struct event-struct venue-struct location-struct shout-struct)
 
-(declare artist-from-name tag-from-name)
+(declare artist-from-name tag-from-name user-from-name)
 
 ;;;;;;;;;; Bio/Wiki ;;;;;;;;;;
 
@@ -204,8 +231,20 @@
       (data :tag)
       (data :url)
       (data :website)
-      (= 1 (-> data :cancelled safe-parse-int))
+      (-> data :cancelled str-1?)
       (parse-event-tags data))))
+
+;;;;;;;;;; Shout ;;;;;;;;;;
+
+(defstruct shout-struct :body :author :date)
+
+(defn- parse-shout [data]
+  (do
+    (debug (str "parse-shout: " data))
+    (struct shout-struct
+      (data :body)
+      (-> data :author user-from-name)
+      (-> data :date parse-date))))
 
 ;;;;;;;;;; Artist ;;;;;;;;;;
 
@@ -220,7 +259,7 @@
       (data :name)
       (data :artist :url)
       (data :mbid)
-      (= 1 (-> data :streamable safe-parse-int))
+      (-> data :streamable str-1?)
       (-> data :stats :listeners safe-parse-int)
       (-> data :stats :playcount safe-parse-int)
       (-> data :bio parse-bio))))
@@ -265,7 +304,7 @@
     :name (data :name)
     :url (data :url)
     :mbid (data :mbid)
-    :streamable (= 1 (-> data :streamable safe-parse-int))
+    :streamable (-> data :streamable str-1?)
     :match (-> data :match safe-parse-double)))
 
 (def #^{:private true} parse-artist-similar
@@ -274,7 +313,8 @@
     #(-> % :similarartists :artist)))
 
 (def #^{:private true} get-artist-similar
-  (create-get-obj-fn {:method "artist.getsimilar"} parse-artist-similar))
+  (create-get-obj-fn
+    {:method "artist.getsimilar"} parse-artist-similar))
 
 (defn- artist-or-name [artst-or-name & _]
     (if (struct? artst-or-name) :artist :name))
@@ -293,14 +333,14 @@
 
 ;;;;;;;;;; artist.gettoptags ;;;;;;;;;;
 
-
 (def #^{:private true} parse-artist-toptags
   (create-parse-one-or-more-fn
     #(struct tag-struct (% :name) (% :url))
     #(-> % :toptags :tag)))
 
 (def #^{:private true} get-artist-toptags
-  (create-get-obj-fn {:method "artist.gettoptags"} parse-artist-toptags))
+  (create-get-obj-fn
+    {:method "artist.gettoptags"} parse-artist-toptags))
 
 (defmulti artist-toptags artist-or-name)
 
@@ -330,7 +370,8 @@
     #(-> % :topalbums :album)))
 
 (def #^{:private true} get-artist-topalbums
-  (create-get-obj-fn {:method "artist.gettopalbums"} parse-artist-topalbums))
+  (create-get-obj-fn
+    {:method "artist.gettopalbums"} parse-artist-topalbums))
 
 (defmulti artist-topalbums artist-or-name)
 
@@ -355,7 +396,8 @@
     #(-> % :topfans :user)))
 
 (def #^{:private true} get-artist-topfans
-  (create-get-obj-fn {:method "artist.gettopfans"} parse-artist-topfans))
+  (create-get-obj-fn
+    {:method "artist.gettopfans"} parse-artist-topfans))
 
 (defmulti artist-topfans artist-or-name)
 
@@ -378,8 +420,8 @@
               :mbid (-> data :artist :mbid))
     :playcount (-> data :playcount safe-parse-int)
     :listeners (-> data :listeners safe-parse-int)
-    :streamable (= 1 (-> data :streamable :#text safe-parse-int))
-    :streamable-full (= 1 (-> data :streamable :fulltrack safe-parse-int))))
+    :streamable (-> data :streamable :#text str-1?)
+    :streamable-full (-> data :streamable :fulltrack str-1?)))
 
 (def #^{:private true} parse-artist-toptracks
   (create-parse-one-or-more-fn
@@ -387,7 +429,8 @@
     #(-> % :toptracks :track)))
 
 (def #^{:private true} get-artist-toptracks
-  (create-get-obj-fn {:method "artist.gettoptracks"} parse-artist-toptracks))
+  (create-get-obj-fn
+    {:method "artist.gettoptracks"} parse-artist-toptracks))
 
 (defmulti artist-toptracks artist-or-name)
 
@@ -405,7 +448,8 @@
     #(-> % :events :event)))
 
 (def #^{:private true} get-artist-events
-  (create-get-obj-fn {:method "artist.getevents"} parse-artist-events))
+  (create-get-obj-fn
+    {:method "artist.getevents"} parse-artist-events))
 
 (defmulti artist-events artist-or-name)
 
@@ -419,29 +463,17 @@
 
 (declare get-artist-pastevents)
 
-(defn- parse-artist-pastevents [data-fn]
-  (lazy-seq
-    (let [data (data-fn)
-          pages (-> data :events attr-kw :totalPages safe-parse-int)
-          page (-> data :events attr-kw :page safe-parse-int)
-          artist-name (-> data :events attr-kw :artist)]
-      (if (= page pages)
-        (parse-artist-events data-fn)
-        (lazy-cat
-          (parse-artist-events data-fn)
-          (get-artist-pastevents {:artist artist-name :page (inc page)}))))))
+(def #^{:private true} parse-artist-pastevents
+  (create-paged-parse-fn
+    #(-> % :events attr-kw)
+    #(hash-map :artist (-> % :events attr-kw :artist))
+    parse-artist-events
+    #(get-artist-pastevents %)))
 
-(defn- get-artist-pastevents
-  ([params]
-    ((create-get-obj-fn
-        {:method "artist.getpastevents"}
-        parse-artist-pastevents)
-      params))
-  ([params page]
-    ((create-get-obj-fn
-        {:method "artist.getpastevents" :page page}
-        parse-artist-pastevents)
-      params)))
+(def #^{:private true} get-artist-pastevents
+  (create-paged-get-obj-fn
+    {:method "artist.getpastevents"}
+    parse-artist-pastevents))
 
 (defmulti artist-pastevents artist-or-name)
 
@@ -450,6 +482,35 @@
 
 (defmethod artist-pastevents :name [artist-name]
   (get-artist-pastevents {:artist artist-name}))
+
+;;;;;;;;;; artist.getshouts ;;;;;;;;;;
+
+(declare get-artist-shouts)
+
+(def #^{:private true} parse-artist-shouts-unpaged
+  (create-parse-one-or-more-fn
+    parse-shout
+    #(-> % :shouts :shout)))
+
+(def #^{:private true} parse-artist-shouts
+  (create-paged-parse-fn
+    #(-> % :shouts attr-kw)
+    #(hash-map :artist (-> % :shouts attr-kw :artist))
+    parse-artist-shouts-unpaged
+    #(get-artist-shouts %)))
+
+(def #^{:private true} get-artist-shouts
+  (create-paged-get-obj-fn
+    {:method "artist.getshouts"}
+    parse-artist-shouts))
+
+(defmulti artist-shouts artist-or-name)
+
+(defmethod artist-shouts :artist [artst]
+  (-> artst :name artist-shouts))
+
+(defmethod artist-shouts :name [artist-name]
+  (get-artist-shouts {:artist artist-name}))
 
 ;;;;;;;;;; Tag ;;;;;;;;;;
 
@@ -470,6 +531,9 @@
 ;;;;;;;;;; User ;;;;;;;;;;
 
 (defstruct user-struct :name :url :realname)
+
+(defn- user-from-name [user-name]
+  (struct-map user-struct :name user-name))
 
 (comment
 
