@@ -26,9 +26,9 @@
         cache-file (File. (str (.getCanonicalPath cache-dir)
                                File/separator "clj-lastfm-" url-hash))]
     (do
-      (debug (str "getting URL: " url))
+      (info (str "getting URL: " url))
       (when-not (and (.exists cache-file) (recently-modified? cache-file expiry-time))
-        (debug "cache missed")
+        (info "cache missed")
         (copy (reader url) cache-file))
       (slurp (.getCanonicalPath cache-file)))))
 

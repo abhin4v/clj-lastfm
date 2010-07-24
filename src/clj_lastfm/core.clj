@@ -59,7 +59,7 @@
   ([url] (get-url url default-cache))
   ([url cache]
     (do
-      (debug (str "URL: " url))
+      (info (str "URL: " url))
       (get-file-content cache url))))
 
 (defn- get-data [params]
@@ -79,34 +79,40 @@
 
 ;;;;;;;;;; forward declaration ;;;;;;;;;;
 
-(declare bio-struct artist-struct tag-struct)
+(declare bio-struct artist-struct tag-struct album-struct)
 
 ;;;;;;;;;; Bio/Wiki ;;;;;;;;;;
 
 (defstruct bio-struct :published :summary :content)
 
 (defn- parse-bio [data]
-  (struct
-    bio-struct
-    (-> data :published parse-date)
-    (-> data :summary)
-    (-> data :content)))
+  (do
+    (debug (str "parse-bio: " data))
+    (struct
+      bio-struct
+      (-> data :published parse-date)
+      (-> data :summary)
+      (-> data :content))))
 
-;;;;;;;;;; artist.getinfo ;;;;;;;;;;
+;;;;;;;;;; Artist ;;;;;;;;;;
 
 (defstruct artist-struct
   :name :url :mbid :streamable :listeners :playcount :bio)
 
 (defn- parse-artist [data]
-  (struct
-    artist-struct
-    (-> data :artist :name)
-    (-> data :artist :url)
-    (-> data :artist :mbid)
-    (= 1 (-> data :artist :streamable parseInt))
-    (-> data :artist :stats :listeners parseInt)
-    (-> data :artist :stats :playcount parseInt)
-    (-> data :artist :bio parse-bio)))
+  (do
+    (debug (str "parse-artist: " data))
+    (struct
+      artist-struct
+      (-> data :artist :name)
+      (-> data :artist :url)
+      (-> data :artist :mbid)
+      (= 1 (-> data :artist :streamable parseInt))
+      (-> data :artist :stats :listeners parseInt)
+      (-> data :artist :stats :playcount parseInt)
+      (-> data :artist :bio parse-bio))))
+
+;;;;;;;;;; artist.getinfo ;;;;;;;;;;
 
 (def #^{:private true}
   get-artist (create-get-obj-fn {:method "artist.getinfo"} parse-artist))
@@ -133,15 +139,17 @@
 ;;;;;;;;;; artist.getsimilar ;;;;;;;;;;
 
 (defn- parse-artist-similar [data]
-  (vec
-    (map
-      #(struct-map artist-struct
-        :name (% :name)
-        :url (% :url)
-        :mbid (% :mbid)
-        :streamable (= 1 (-> % :streamable parseInt))
-        :match (-> % :match parseDouble))
-      (-> data :similarartists :artist))))
+  (do
+    (debug (str "parse-artist-similar: " data))
+    (vec
+      (map
+        #(struct-map artist-struct
+          :name (% :name)
+          :url (% :url)
+          :mbid (% :mbid)
+          :streamable (= 1 (-> % :streamable parseInt))
+          :match (-> % :match parseDouble))
+        (-> data :similarartists :artist)))))
 
 (def #^{:private true} get-artist-similar
   (create-get-obj-fn {:method "artist.getsimilar"} parse-artist-similar))
@@ -165,7 +173,10 @@
 ;;;;;;;;;; artist.gettoptags ;;;;;;;;;;
 
 (defn- parse-artist-toptags [data]
-  (vec (map #(struct tag-struct (% :name) (% :url)) (-> data :toptags :tag))))
+  (do
+    (debug (str "parse-artist-toptags: " data))
+    (vec (map #(struct tag-struct (% :name) (% :url))
+               (-> data :toptags :tag)))))
 
 (def #^{:private true} get-artist-toptags
   (create-get-obj-fn {:method "artist.gettoptags"} parse-artist-toptags))
@@ -178,9 +189,44 @@
 (defmethod artist-toptags :name [artist-name]
   (get-artist-toptags {:artist artist-name}))
 
-;;;;;;;;;; tag ;;;;;;;;;;
+;;;;;;;;;; artist.gettopalbums ;;;;;;;;;;
+
+(defn- parse-artist-topalbums [data]
+  (do
+    (debug (str "parse-artist-topalbums: " data))
+    (vec
+      (map
+        #(struct-map album-struct
+          :name (% :name)
+          :url (% :url)
+          :mbid (% :mbid)
+          :artist (struct-map artist-struct
+                    :name (-> % :artist :name)
+                    :url (-> % :artist :url)
+                    :mbid (-> % :artist :mbid))
+          :playcount (-> % :playcount parseInt)
+          :rank (parseInt ((% (keyword "@attr")) :rank)))
+        (-> data :topalbums :album)))))
+
+(def #^{:private true} get-artist-topalbums
+  (create-get-obj-fn {:method "artist.gettopalbums"} parse-artist-topalbums))
+
+(defmulti artist-topalbums artist-or-name)
+
+(defmethod artist-topalbums :artist [artst]
+  (-> artst :name artist-topalbums))
+
+(defmethod artist-topalbums :name [artist-name]
+  (get-artist-topalbums {:artist artist-name}))
+
+
+;;;;;;;;;; Tag ;;;;;;;;;;
 
 (defstruct tag-struct :name :url)
+
+;;;;;;;;;; Album ;;;;;;;;;;
+
+(defstruct album-struct :name :url :mbid :artist :playcount)
 
 (comment
 
