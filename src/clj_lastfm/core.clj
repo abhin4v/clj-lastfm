@@ -142,12 +142,14 @@
                     :totalPages safe-parse-int)
             page (-> data page-meta-extractor-fn
                     :page safe-parse-int)
+            limit (-> data page-meta-extractor-fn
+                    :perPage safe-parse-int)
             params (param-extractor-fn data)]
         (if (= page pages)
           (parse-unpaged-fn data-fn)
           (lazy-cat
             (parse-unpaged-fn data-fn)
-            (get-fn (merge params {:page (inc page)}))))))))
+            (get-fn (merge params {:page (inc page) :limit limit}))))))))
 
 ;;;;;;;;;; forward declaration ;;;;;;;;;;
 
@@ -477,11 +479,15 @@
 
 (defmulti artist-pastevents artist-or-name)
 
-(defmethod artist-pastevents :artist [artst]
-  (-> artst :name artist-pastevents))
+(defmethod artist-pastevents :artist
+  ([artst] (-> artst :name artist-pastevents))
+  ([artst limit] (artist-pastevents (artst :name) limit)))
 
-(defmethod artist-pastevents :name [artist-name]
-  (get-artist-pastevents {:artist artist-name}))
+(defmethod artist-pastevents :name
+  ([artist-name]
+    (get-artist-pastevents {:artist artist-name}))
+  ([artist-name limit]
+    (get-artist-pastevents {:artist artist-name :limit limit})))
 
 ;;;;;;;;;; artist.getshouts ;;;;;;;;;;
 
@@ -506,11 +512,15 @@
 
 (defmulti artist-shouts artist-or-name)
 
-(defmethod artist-shouts :artist [artst]
-  (-> artst :name artist-shouts))
+(defmethod artist-shouts :artist
+  ([artst] (-> artst :name artist-shouts))
+  ([artst limit] (artist-shouts (artst :name) limit)))
 
-(defmethod artist-shouts :name [artist-name]
-  (get-artist-shouts {:artist artist-name}))
+(defmethod artist-shouts :name
+  ([artist-name]
+    (get-artist-shouts {:artist artist-name}))
+  ([artist-name limit]
+    (get-artist-shouts {:artist artist-name :limit limit})))
 
 ;;;;;;;;;; Tag ;;;;;;;;;;
 
