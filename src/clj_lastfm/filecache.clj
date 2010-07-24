@@ -1,6 +1,7 @@
 (ns clj-lastfm.filecache
   (:import (java.io File))
-  (:use clojure.contrib.duck-streams))
+  (:use [clojure.contrib.duck-streams]
+        [clojure.contrib.logging]))
 
 (def default-cache-dir (File. (System/getProperty "java.io.tmpdir")))
 (def default-expiry-time (* 24 60)) ;in minutes
@@ -25,7 +26,9 @@
         cache-file (File. (str (.getCanonicalPath cache-dir)
                                File/separator "clj-lastfm-" url-hash))]
     (do
+      (debug (str "getting URL: " url))
       (when-not (and (.exists cache-file) (recently-modified? cache-file expiry-time))
+        (debug "cache missed")
         (copy (reader url) cache-file))
       (slurp (.getCanonicalPath cache-file)))))
 

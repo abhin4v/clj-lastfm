@@ -9,6 +9,7 @@
         [clojure.contrib.logging]))
 
 (import-static java.lang.Integer parseInt)
+(import-static java.lang.Double parseDouble)
 
 ;;;;;;;;;; Basic ;;;;;;;;;;
 
@@ -21,14 +22,14 @@
       (throw (IllegalStateException. "lastfm API key is not set"))
       lastfm-api-key)))
 
-(def guid-pattern
+(def #^{:private true} guid-pattern
   #"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 
 (def #^{:private true} sdf
   (doto (SimpleDateFormat. "EEE, dd MMMM yyyy HH:mm:ss +0000")
     (.setTimeZone (TimeZone/getTimeZone "GMT"))))
 
-(defn parse-date [date-str]
+(defn- parse-date [date-str]
   (.parse sdf date-str))
 
 (defn- remove-nil-values [m]
@@ -65,34 +66,38 @@
   (let [url (create-url params)]
     (-> url get-url read-json keywordize-keys)))
 
-(defn create-get-obj-fn [fixed-params parse-fn]
+(defn- create-get-obj-fn [fixed-params parse-fn]
   (fn [more-params]
     (parse-fn (get-data (merge fixed-params more-params)))))
 
-(defn create-get-obj-field-fn [create-obj-fn extract-obj-id-fields-fn]
+(defn- create-get-obj-field-fn [create-obj-fn extract-obj-id-fields-fn]
   (fn [obj field-kw]
     (let [field-val (obj field-kw)]
       (if (nil? field-val)
         ((apply create-obj-fn (extract-obj-id-fields-fn obj)) field-kw)
         field-val))))
 
+;;;;;;;;;; forward declaration ;;;;;;;;;;
+
+(declare bio-struct artist-struct tag-struct)
+
 ;;;;;;;;;; Bio/Wiki ;;;;;;;;;;
 
 (defstruct bio-struct :published :summary :content)
 
-(defn parse-bio [data]
+(defn- parse-bio [data]
   (struct
     bio-struct
     (-> data :published parse-date)
     (-> data :summary)
     (-> data :content)))
 
-;;;;;;;;;; Artist ;;;;;;;;;;
+;;;;;;;;;; artist.getinfo ;;;;;;;;;;
 
 (defstruct artist-struct
   :name :url :mbid :streamable :listeners :playcount :bio)
 
-(defn parse-artist [data]
+(defn- parse-artist [data]
   (struct
     artist-struct
     (-> data :artist :name)
@@ -125,30 +130,57 @@
 (def artist-info
   (create-get-obj-field-fn artist #(vector (% :name))))
 
-(defn parse-artist-similar [data]
-  (map
-    #(struct artist-struct
-      (% :name)
-      (% :url)
-      (% :mbid)
-      (= 1 (-> % :streamable parseInt))
-      nil nil nil)
-    (-> data :similarartists :artist)))
+;;;;;;;;;; artist.getsimilar ;;;;;;;;;;
+
+(defn- parse-artist-similar [data]
+  (vec
+    (map
+      #(struct-map artist-struct
+        :name (% :name)
+        :url (% :url)
+        :mbid (% :mbid)
+        :streamable (= 1 (-> % :streamable parseInt))
+        :match (-> % :match parseDouble))
+      (-> data :similarartists :artist))))
 
 (def #^{:private true} get-artist-similar
   (create-get-obj-fn {:method "artist.getsimilar"} parse-artist-similar))
 
-(defmulti artist-similar 
-  (fn [artst-or-name & _] 
-    (instance? clojure.lang.PersistentStructMap artst-or-name)))
+(defn- artist-or-name [artst-or-name & _]
+    (if (instance? clojure.lang.PersistentStructMap artst-or-name)
+      :artist :name))
 
-(defmethod artist-similar true 
+(defmulti artist-similar artist-or-name)
+
+(defmethod artist-similar :artist
   ([artst] (-> artst :name artist-similar))
   ([artst limit] (artist-similar (artst :name) limit)))
 
-(defmethod artist-similar false 
-  ([artist-name] (get-artist-similar {:artist artist-name}))
-  ([artist-name limit] (get-artist-similar {:artist artist-name :limit limit})))  
+(defmethod artist-similar :name
+  ([artist-name]
+    (get-artist-similar {:artist artist-name}))
+  ([artist-name limit]
+    (get-artist-similar {:artist artist-name :limit limit})))
+
+;;;;;;;;;; artist.gettoptags ;;;;;;;;;;
+
+(defn- parse-artist-toptags [data]
+  (vec (map #(struct tag-struct (% :name) (% :url)) (-> data :toptags :tag))))
+
+(def #^{:private true} get-artist-toptags
+  (create-get-obj-fn {:method "artist.gettoptags"} parse-artist-toptags))
+
+(defmulti artist-toptags artist-or-name)
+
+(defmethod artist-toptags :artist [artst]
+  (-> artst :name artist-toptags))
+
+(defmethod artist-toptags :name [artist-name]
+  (get-artist-toptags {:artist artist-name}))
+
+;;;;;;;;;; tag ;;;;;;;;;;
+
+(defstruct tag-struct :name :url)
 
 (comment
 
