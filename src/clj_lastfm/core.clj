@@ -22,6 +22,8 @@
 (def #^{:private true} guid-pattern
   #"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 
+(def #^{:private true} attr-kw (keyword "@attr"))
+
 (defn- safe-parse-int [n]
   (if (nil? n)
     nil
@@ -54,6 +56,9 @@
 
 (defn- remove-nil-values [m]
   (apply hash-map (apply concat (filter #(not (nil? (fnext %))) m))))
+
+(defn- lastfm-url [path]
+  (.toString (URI. "http" "www.last.fm" path nil nil)))
 
 (defn- create-url-query [query-params]
   (apply str
@@ -315,7 +320,7 @@
               :url (-> data :artist :url)
               :mbid (-> data :artist :mbid))
     :playcount (-> data :playcount safe-parse-int)
-    :rank (safe-parse-int ((data (keyword "@attr")) :rank))))
+    :rank (-> data attr-kw :rank safe-parse-int)))
 
 (def #^{:private true} parse-artist-topalbums
   (create-parse-one-or-more-fn
@@ -390,7 +395,6 @@
 (defmethod artist-toptracks :name [artist-name]
   (get-artist-toptracks {:artist artist-name}))
 
-
 ;;;;;;;;;; artist.getevents ;;;;;;;;;;
 
 (def #^{:private true} parse-artist-events
@@ -409,14 +413,46 @@
 (defmethod artist-events :name [artist-name]
   (get-artist-events {:artist artist-name}))
 
+;;;;;;;;;; artist.getpastevents ;;;;;;;;;;
+
+(declare get-artist-pastevents)
+
+(defn- parse-artist-pastevents [data]
+  (let [pages (-> data :events attr-kw :totalPages safe-parse-int)
+        page (-> data :events attr-kw :page safe-parse-int)
+        artist-name (-> data :events attr-kw :artist)]
+    (if (= page pages)
+      (parse-artist-events data)
+      (lazy-cat
+        (parse-artist-events data)
+        (get-artist-pastevents {:artist artist-name :page (inc page)})))))
+
+(defn- get-artist-pastevents
+  ([params]
+    ((create-get-obj-fn
+        {:method "artist.getpastevents"}
+        parse-artist-pastevents)
+      params))
+  ([params page]
+    ((create-get-obj-fn
+        {:method "artist.getpastevents" :page page}
+        parse-artist-pastevents)
+      params)))
+
+(defmulti artist-pastevents artist-or-name)
+
+(defmethod artist-pastevents :artist [artst]
+  (-> artst :name artist-pastevents))
+
+(defmethod artist-pastevents :name [artist-name]
+  (get-artist-pastevents {:artist artist-name}))
+
 ;;;;;;;;;; Tag ;;;;;;;;;;
 
 (defstruct tag-struct :name :url)
 
 (defn- tag-from-name [tag-name]
-  (struct tag-struct 
-    tag-name 
-    (.toString (URI. "http" "www.last.fm" (str "/tag/" tag-name) nil nil))))
+  (struct tag-struct tag-name (lastfm-url (str "/tag/" tag-name))))
 
 ;;;;;;;;;; Album ;;;;;;;;;;
 
