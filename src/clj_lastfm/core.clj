@@ -79,7 +79,7 @@
 
 ;;;;;;;;;; forward declaration ;;;;;;;;;;
 
-(declare bio-struct artist-struct tag-struct album-struct)
+(declare bio-struct artist-struct tag-struct album-struct user-struct)
 
 ;;;;;;;;;; Bio/Wiki ;;;;;;;;;;
 
@@ -219,6 +219,30 @@
 (defmethod artist-topalbums :name [artist-name]
   (get-artist-topalbums {:artist artist-name}))
 
+;;;;;;;;;; artist.gettopfans ;;;;;;;;;;
+
+(defn- parse-artist-topfans [data]
+  (do
+    (debug (str "parse-artist-topfans: " data))
+    (vec
+      (map
+        #(struct-map user-struct
+          :name (% :name)
+          :url (% :url)
+          :realname (% :realname)
+          :weight (-> % :weight parseInt))
+        (-> data :topfans :user)))))
+
+(def #^{:private true} get-artist-topfans
+  (create-get-obj-fn {:method "artist.gettopfans"} parse-artist-topfans))
+
+(defmulti artist-topfans artist-or-name)
+
+(defmethod artist-topfans :artist [artst]
+  (-> artst :name artist-topfans))
+
+(defmethod artist-topfans :name [artist-name]
+  (get-artist-topfans {:artist artist-name}))
 
 ;;;;;;;;;; Tag ;;;;;;;;;;
 
@@ -227,6 +251,10 @@
 ;;;;;;;;;; Album ;;;;;;;;;;
 
 (defstruct album-struct :name :url :mbid :artist :playcount)
+
+;;;;;;;;;; User ;;;;;;;;;;
+
+(defstruct user-struct :name :url :realname)
 
 (comment
 
