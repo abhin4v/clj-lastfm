@@ -26,6 +26,8 @@
 
 (defvar- attr-kw (keyword "@attr"))
 
+(defvar- text-kw (keyword "#text"))
+
 (defn- safe-parse-int [n]
   (if (nil? n)
     nil
@@ -428,7 +430,7 @@
               :mbid (-> data :artist :mbid))
     :playcount (-> data :playcount safe-parse-int)
     :listeners (-> data :listeners safe-parse-int)
-    :streamable (-> data :streamable :#text str-1?)
+    :streamable (-> data :streamable text-kw str-1?)
     :streamable-full (-> data :streamable :fulltrack str-1?)))
 
 (defvar- parse-artist-toptracks
