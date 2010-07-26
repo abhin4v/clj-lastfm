@@ -6,6 +6,7 @@
         [clojure.contrib.def :only (defstruct- defvar-)]
         [clojure.contrib.json.read :only (read-json)]
         [clojure.contrib.logging]
+        [clojure.contrib.math :only (ceil)]
         [clojure.walk :only (keywordize-keys)]))
 
 ;;;;;;;;;; Basic ;;;;;;;;;;
@@ -20,7 +21,8 @@
 
 (defvar- guid-pattern
   (let [an "[0-9a-fA-F]"]
-    (re-pattern (str "^" an "{8}-" an "{4}-" an "{4}-" an "{4}-" an "{12}$"))))
+    (re-pattern
+      (str "^" an "{8}-" an "{4}-" an "{4}-" an "{4}-" an "{12}$"))))
 
 (defn- mbid? [s] (if (re-matches guid-pattern s) true false))
 
@@ -142,22 +144,38 @@
         (vec (map obj-from-name-fn string-or-list))))))
 
 (defn- create-paged-parse-fn
-  [page-meta-extractor-fn param-extractor-fn parse-unpaged-fn get-fn]
+  [pages-fn page-fn perpage-fn param-fn parse-unpaged-fn get-fn]
   (fn [data-fn]
     (lazy-seq
       (let [data (data-fn)
-            pages (-> data page-meta-extractor-fn
-                    :totalPages safe-parse-int)
-            page (-> data page-meta-extractor-fn
-                    :page safe-parse-int)
-            limit (-> data page-meta-extractor-fn
-                    :perPage safe-parse-int)
-            params (param-extractor-fn data)]
+            pages (-> data pages-fn safe-parse-int)
+            page (-> data page-fn safe-parse-int)
+            limit (-> data perpage-fn safe-parse-int)
+            params (param-fn data)]
         (if (= page pages)
           (parse-unpaged-fn data-fn)
           (lazy-cat
             (parse-unpaged-fn data-fn)
             (get-fn (merge params {:page (inc page) :limit limit}))))))))
+
+(defn- create-paged-result-parse-fn
+  [page-info-fn param-fn parse-unpaged-fn get-fn]
+  (create-paged-parse-fn
+    #(-> % page-info-fn :totalPages)
+    #(-> % page-info-fn :page)
+    #(-> % page-info-fn :perPage)
+    param-fn parse-unpaged-fn get-fn))
+
+(defn- create-paged-search-parse-fn
+  [parse-unpaged-fn search-key get-fn]
+  (create-paged-parse-fn
+    #(-> (/ (-> % :results :opensearch:totalResults safe-parse-int)
+            (-> % :results :opensearch:itemsPerPage safe-parse-double))
+         ceil int str)
+    #(-> % :results :opensearch:Query :startPage)
+    #(-> % :results :opensearch:itemsPerPage)
+    #(hash-map search-key (-> % :results :opensearch:Query :searchTerms))
+    parse-unpaged-fn get-fn))
 
 ;;;;;;;;;; forward declaration ;;;;;;;;;;
 
@@ -267,7 +285,7 @@
     (struct
       artist-struct
       (data :name)
-      (data :artist :url)
+      (data :url)
       (data :mbid)
       (-> data :streamable str-1?)
       (-> data :stats :listeners safe-parse-int)
@@ -453,9 +471,7 @@
 ;;;;;;;;;; artist.getevents ;;;;;;;;;;
 
 (defvar- parse-artist-events
-  (create-parse-one-or-more-fn
-    parse-event
-    #(-> % :events :event)))
+  (create-parse-one-or-more-fn parse-event #(-> % :events :event)))
 
 (defvar- get-artist-events
   (create-get-obj-fn
@@ -474,7 +490,7 @@
 (declare get-artist-pastevents)
 
 (defvar- parse-artist-pastevents
-  (create-paged-parse-fn
+  (create-paged-result-parse-fn
     #(-> % :events attr-kw)
     #(hash-map :artist (-> % :events attr-kw :artist))
     parse-artist-events
@@ -502,12 +518,10 @@
 (declare get-artist-shouts)
 
 (defvar- parse-artist-shouts-unpaged
-  (create-parse-one-or-more-fn
-    parse-shout
-    #(-> % :shouts :shout)))
+  (create-parse-one-or-more-fn parse-shout #(-> % :shouts :shout)))
 
 (defvar- parse-artist-shouts
-  (create-paged-parse-fn
+  (create-paged-result-parse-fn
     #(-> % :shouts attr-kw)
     #(hash-map :artist (-> % :shouts attr-kw :artist))
     parse-artist-shouts-unpaged
@@ -529,6 +543,33 @@
     (get-artist-shouts {:artist artist-name}))
   ([artist-name limit]
     (get-artist-shouts {:artist artist-name :limit limit})))
+
+;;;;;;;;;; artist.getshouts ;;;;;;;;;;
+
+(declare get-artist-search)
+
+(defvar- parse-artist-search-unpaged
+  (create-parse-one-or-more-fn
+    #(struct-map artist-struct
+        :name (% :name)
+        :url (% :url)
+        :mbid (% :mbid)
+        :streamable (-> % :streamable str-1?))
+    #(-> % :results :artistmatches :artist)))
+
+(defvar- parse-artist-search
+  (create-paged-search-parse-fn
+    parse-artist-search-unpaged
+    :artist
+    #(get-artist-search %)))
+
+(defvar- get-artist-search
+  (create-paged-get-obj-fn
+    {:method "artist.search"}
+    parse-artist-search))
+
+(defn artist-search [artist-name]
+    (get-artist-search {:artist artist-name}))
 
 ;;;;;;;;;; Tag ;;;;;;;;;;
 
