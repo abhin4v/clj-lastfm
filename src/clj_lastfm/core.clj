@@ -337,8 +337,7 @@
 
 (defvar- parse-artist-similar
   (create-parse-one-or-more-fn
-    parse-artist-similar-1
-    #(-> % :similarartists :artist)))
+    parse-artist-similar-1 #(-> % :similarartists :artist)))
 
 (defvar- get-artist-similar
   (create-get-obj-fn
@@ -394,8 +393,7 @@
 
 (defvar- parse-artist-topalbums
   (create-parse-one-or-more-fn
-    parse-artist-topalbums-1
-    #(-> % :topalbums :album)))
+    parse-artist-topalbums-1 #(-> % :topalbums :album)))
 
 (defvar- get-artist-topalbums
   (create-get-obj-fn
@@ -420,8 +418,7 @@
 
 (defvar- parse-artist-topfans
   (create-parse-one-or-more-fn
-    parse-artist-topfans-1
-    #(-> % :topfans :user)))
+    parse-artist-topfans-1 #(-> % :topfans :user)))
 
 (defvar- get-artist-topfans
   (create-get-obj-fn
@@ -453,8 +450,7 @@
 
 (defvar- parse-artist-toptracks
   (create-parse-one-or-more-fn
-    parse-artist-toptracks-1
-    #(-> % :toptracks :track)))
+    parse-artist-toptracks-1 #(-> % :toptracks :track)))
 
 (defvar- get-artist-toptracks
   (create-get-obj-fn
@@ -498,8 +494,7 @@
 
 (defvar- get-artist-pastevents
   (create-paged-get-obj-fn
-    {:method "artist.getpastevents"}
-    parse-artist-pastevents))
+    {:method "artist.getpastevents"} parse-artist-pastevents))
 
 (defmulti artist-pastevents artist-or-name)
 
@@ -529,8 +524,7 @@
 
 (defvar- get-artist-shouts
   (create-paged-get-obj-fn
-    {:method "artist.getshouts"}
-    parse-artist-shouts))
+    {:method "artist.getshouts"} parse-artist-shouts))
 
 (defmulti artist-shouts artist-or-name)
 
@@ -544,7 +538,7 @@
   ([artist-name limit]
     (get-artist-shouts {:artist artist-name :limit limit})))
 
-;;;;;;;;;; artist.getshouts ;;;;;;;;;;
+;;;;;;;;;; artist.search ;;;;;;;;;;
 
 (declare get-artist-search)
 
@@ -559,17 +553,43 @@
 
 (defvar- parse-artist-search
   (create-paged-search-parse-fn
-    parse-artist-search-unpaged
-    :artist
-    #(get-artist-search %)))
+    parse-artist-search-unpaged :artist #(get-artist-search %)))
 
 (defvar- get-artist-search
   (create-paged-get-obj-fn
-    {:method "artist.search"}
-    parse-artist-search))
+    {:method "artist.search"} parse-artist-search))
 
 (defn artist-search [artist-name]
     (get-artist-search {:artist artist-name}))
+
+;;;;;;;;;; Album ;;;;;;;;;;
+
+(defstruct- album-struct :name :id :url :mbid :artist :playcount)
+
+;;;;;;;;;; album.search ;;;;;;;;;;
+
+(declare get-album-search)
+
+(defvar- parse-album-search-unpaged
+  (create-parse-one-or-more-fn
+    #(struct-map album-struct
+        :name (% :name)
+        :url (% :url)
+        :id (-> % :id safe-parse-int)
+        :artist (-> % :artist artist-from-name)
+        :streamable (-> % :streamable str-1?))
+    #(-> % :results :albummatches :album)))
+
+(defvar- parse-album-search
+  (create-paged-search-parse-fn
+    parse-album-search-unpaged :album #(get-album-search %)))
+
+(defvar- get-album-search
+  (create-paged-get-obj-fn
+    {:method "album.search"} parse-album-search))
+
+(defn album-search [album-name]
+    (get-album-search {:album album-name}))
 
 ;;;;;;;;;; Tag ;;;;;;;;;;
 
@@ -577,10 +597,6 @@
 
 (defn- tag-from-name [tag-name]
   (struct tag-struct tag-name (lastfm-url (str "/tag/" tag-name))))
-
-;;;;;;;;;; Album ;;;;;;;;;;
-
-(defstruct- album-struct :name :url :mbid :artist :playcount)
 
 ;;;;;;;;;; Track ;;;;;;;;;;
 
