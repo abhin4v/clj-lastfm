@@ -71,6 +71,10 @@
 (defn- lastfm-url [path]
   (.toString (URI. "http" "www.last.fm" path nil nil)))
 
+(defn- arg-types [& args] (->> args (map class) vec))
+
+(defn- first-arg-type [& args] (->> args first class))
+
 (defn- create-url-query [query-params]
   (apply str
     (interpose
@@ -117,13 +121,6 @@
     ([more-params page]
       ((create-get-obj-fn fixed-params parse-fn)
         (assoc more-params :page page)))))
-
-(defn- create-get-obj-field-fn [create-obj-fn extract-obj-id-fields-fn]
-  (fn [obj field-kw]
-    (let [field-val (obj field-kw)]
-      (if (nil? field-val)
-        ((apply create-obj-fn (extract-obj-id-fields-fn obj)) field-kw)
-        field-val))))
 
 (defn- create-parse-one-or-more-fn [parse-one-fn extractor-fn]
   (fn [data-fn]
@@ -176,10 +173,12 @@
     #(hash-map search-key (-> % :results :opensearch:Query :searchTerms))
     parse-unpaged-fn get-fn))
 
+(defn- record-from-map [record-class no-of-fields field-map]
+  (merge
+    (eval `(new ~record-class ~@(repeat no-of-fields nil)))
+    field-map))
 
 ;;;;;;;;;; record defs ;;;;;;;;;;
-
-(defrecord Tag [name url])
 
 (defrecord Bio [published summary content])
 
@@ -199,12 +198,14 @@
 (defrecord Track
   [name url mbid artist playcount listeners streamable])
 
+(defrecord Tag [name url])
+
 (defrecord User [name url realname])
 
 ;;;;;;;;;; forward declaration ;;;;;;;;;;
 
 (declare artist-from-name tag-from-name user-from-name
-  album-from-map user-from-map track-from-map)
+  album-from-map user-from-map track-from-map tag-from-map)
 
 ;;;;;;;;;; Bio/Wiki ;;;;;;;;;;
 
@@ -295,8 +296,7 @@
       (-> data :stats :playcount safe-parse-int)
       (-> data :bio parse-bio))))
 
-(defn- artist-from-map [field-map]
-  (merge (Artist. nil nil nil nil nil nil nil) field-map))
+(defvar- artist-from-map (partial record-from-map Artist 7))
 
 (defn- artist-from-name [artist-name] (artist-from-map {:name artist-name}))
 
@@ -311,24 +311,29 @@
 (defvar- get-artist
   (create-get-obj-fn {:method "artist.getinfo"} parse-artist-getinfo))
 
-(defmulti artist
-  (fn [artist-or-mbid & _]
-    (if (mbid? artist-or-mbid) :mbid :artist)))
+(defmulti artist-info
+  (fn [arg1 & _]
+    (cond
+      (instance? Artist arg1) :artist
+      (mbid? arg1) :mbid
+      :else :artist-name)))
 
-(defmethod artist :artist
-  ([artist-name] (artist artist-name nil nil))
-  ([artist-name username] (artist artist-name username nil))
+(defmethod artist-info :artist
+  ([artist] (-> artist :name artist-info))
+  ([artist username] (-> artist :name (artist-info username)))
+  ([artist username lang] (-> artist :name (artist-info username lang))))
+
+(defmethod artist-info :artist-name
+  ([artist-name] (artist-info artist-name nil nil))
+  ([artist-name username] (artist-info artist-name username nil))
   ([artist-name username lang]
     (get-artist {:artist artist-name :username username :lang lang})))
 
-(defmethod artist :mbid
-  ([mbid] (artist mbid nil nil))
-  ([mbid username] (artist mbid username nil))
+(defmethod artist-info :mbid
+  ([mbid] (artist-info mbid nil nil))
+  ([mbid username] (artist-info mbid username nil))
   ([mbid username lang]
     (get-artist {:mbid mbid :username username :lang lang})))
-
-(def artist-info
-  (create-get-obj-field-fn artist #(vector (% :name))))
 
 ;;;;;;;;;; artist.getsimilar ;;;;;;;;;;
 
@@ -348,16 +353,13 @@
   (create-get-obj-fn
     {:method "artist.getsimilar"} parse-artist-similar))
 
-(defn- artist-or-name [artst-or-name & _]
-    (if (struct? artst-or-name) :artist :name))
+(defmulti artist-similar first-arg-type)
 
-(defmulti artist-similar artist-or-name)
+(defmethod artist-similar Artist
+  ([artist] (-> artist :name artist-similar))
+  ([artist limit] (-> artist :name (artist-similar limit))))
 
-(defmethod artist-similar :artist
-  ([artst] (-> artst :name artist-similar))
-  ([artst limit] (artist-similar (artst :name) limit)))
-
-(defmethod artist-similar :name
+(defmethod artist-similar String
   ([artist-name]
     (get-artist-similar {:artist artist-name}))
   ([artist-name limit]
@@ -367,19 +369,18 @@
 
 (defvar- parse-artist-toptags
   (create-parse-one-or-more-fn
-    #(Tag. (% :name) (% :url))
-    #(-> % :toptags :tag)))
+    #(Tag. (% :name) (% :url)) #(-> % :toptags :tag)))
 
 (defvar- get-artist-toptags
   (create-get-obj-fn
     {:method "artist.gettoptags"} parse-artist-toptags))
 
-(defmulti artist-toptags artist-or-name)
+(defmulti artist-toptags first-arg-type)
 
-(defmethod artist-toptags :artist [artst]
-  (-> artst :name artist-toptags))
+(defmethod artist-toptags Artist [artist]
+  (-> artist :name artist-toptags))
 
-(defmethod artist-toptags :name [artist-name]
+(defmethod artist-toptags String [artist-name]
   (get-artist-toptags {:artist artist-name}))
 
 ;;;;;;;;;; artist.gettopalbums ;;;;;;;;;;
@@ -404,12 +405,12 @@
   (create-get-obj-fn
     {:method "artist.gettopalbums"} parse-artist-topalbums))
 
-(defmulti artist-topalbums artist-or-name)
+(defmulti artist-topalbums first-arg-type)
 
-(defmethod artist-topalbums :artist [artst]
-  (-> artst :name artist-topalbums))
+(defmethod artist-topalbums Artist [artist]
+  (-> artist :name artist-topalbums))
 
-(defmethod artist-topalbums :name [artist-name]
+(defmethod artist-topalbums String [artist-name]
   (get-artist-topalbums {:artist artist-name}))
 
 ;;;;;;;;;; artist.gettopfans ;;;;;;;;;;
@@ -429,12 +430,12 @@
   (create-get-obj-fn
     {:method "artist.gettopfans"} parse-artist-topfans))
 
-(defmulti artist-topfans artist-or-name)
+(defmulti artist-topfans first-arg-type)
 
-(defmethod artist-topfans :artist [artst]
-  (-> artst :name artist-topfans))
+(defmethod artist-topfans Artist [artist]
+  (-> artist :name artist-topfans))
 
-(defmethod artist-topfans :name [artist-name]
+(defmethod artist-topfans String [artist-name]
   (get-artist-topfans {:artist artist-name}))
 
 ;;;;;;;;;; artist.gettoptracks ;;;;;;;;;;
@@ -461,12 +462,12 @@
   (create-get-obj-fn
     {:method "artist.gettoptracks"} parse-artist-toptracks))
 
-(defmulti artist-toptracks artist-or-name)
+(defmulti artist-toptracks first-arg-type)
 
-(defmethod artist-toptracks :artist [artst]
-  (-> artst :name artist-toptracks))
+(defmethod artist-toptracks Artist [artist]
+  (-> artist :name artist-toptracks))
 
-(defmethod artist-toptracks :name [artist-name]
+(defmethod artist-toptracks String [artist-name]
   (get-artist-toptracks {:artist artist-name}))
 
 ;;;;;;;;;; artist.getevents ;;;;;;;;;;
@@ -478,12 +479,12 @@
   (create-get-obj-fn
     {:method "artist.getevents"} parse-artist-events))
 
-(defmulti artist-events artist-or-name)
+(defmulti artist-events first-arg-type)
 
-(defmethod artist-events :artist [artst]
-  (-> artst :name artist-events))
+(defmethod artist-events Artist [artist]
+  (-> artist :name artist-events))
 
-(defmethod artist-events :name [artist-name]
+(defmethod artist-events String [artist-name]
   (get-artist-events {:artist artist-name}))
 
 ;;;;;;;;;; artist.getpastevents ;;;;;;;;;;
@@ -501,13 +502,13 @@
   (create-paged-get-obj-fn
     {:method "artist.getpastevents"} parse-artist-pastevents))
 
-(defmulti artist-pastevents artist-or-name)
+(defmulti artist-pastevents first-arg-type)
 
-(defmethod artist-pastevents :artist
-  ([artst] (-> artst :name artist-pastevents))
-  ([artst limit] (artist-pastevents (artst :name) limit)))
+(defmethod artist-pastevents Artist
+  ([artist] (-> artist :name artist-pastevents))
+  ([artist limit] (-> artist :name (artist-pastevents limit))))
 
-(defmethod artist-pastevents :name
+(defmethod artist-pastevents String
   ([artist-name]
     (get-artist-pastevents {:artist artist-name}))
   ([artist-name limit]
@@ -531,13 +532,13 @@
   (create-paged-get-obj-fn
     {:method "artist.getshouts"} parse-artist-shouts))
 
-(defmulti artist-shouts artist-or-name)
+(defmulti artist-shouts first-arg-type)
 
-(defmethod artist-shouts :artist
-  ([artst] (-> artst :name artist-shouts))
-  ([artst limit] (artist-shouts (artst :name) limit)))
+(defmethod artist-shouts Artist
+  ([artist] (-> artist :name artist-shouts))
+  ([artist limit] (-> artist :name (artist-shouts limit))))
 
-(defmethod artist-shouts :name
+(defmethod artist-shouts String
   ([artist-name]
     (get-artist-shouts {:artist artist-name}))
   ([artist-name limit]
@@ -564,13 +565,38 @@
   (create-paged-get-obj-fn
     {:method "artist.search"} parse-artist-search))
 
-(defn artist-search [artist-name]
+(defn artist-search
+  ([artist-name]
     (get-artist-search {:artist artist-name}))
+  ([artist-name limit]
+    (get-artist-search {:artist artist-name :limit limit})))
 
 ;;;;;;;;;; Album ;;;;;;;;;;
 
-(defn- album-from-map [field-map]
-  (merge (Album. nil nil nil nil nil nil) field-map))
+(defvar- album-from-map (partial record-from-map Album 6))
+
+;;;;;;;;;; album.gettoptags ;;;;;;;;;;
+
+(defvar- parse-album-toptags
+  (create-parse-one-or-more-fn
+    #(tag-from-map
+      {:name (% :name) :url (% :url) :count (% :count)})
+    #(-> % :toptags :tag)))
+
+(defvar- get-album-toptags
+  (create-get-obj-fn
+    {:method "album.gettoptags"} parse-album-toptags))
+
+(defmulti album-toptags arg-types)
+
+(defmethod album-toptags [Album] [album]
+  (album-toptags (-> album :name) (-> album :artist :name)))
+
+(defmethod album-toptags [String Artist] [album-name artist]
+  (album-toptags album-name (-> artist :name)))
+
+(defmethod album-toptags [String String] [album-name artist-name]
+  (get-album-toptags {:album album-name :artist artist-name}))
 
 ;;;;;;;;;; album.search ;;;;;;;;;;
 
@@ -599,21 +625,20 @@
 
 ;;;;;;;;;; Tag ;;;;;;;;;;
 
+(defvar- tag-from-map (partial record-from-map Tag 2))
+
 (defn- tag-from-name [tag-name]
   (Tag. tag-name (lastfm-url (str "/tag/" tag-name))))
 
 ;;;;;;;;;; Track ;;;;;;;;;;
 
-(defn- track-from-map [field-map]
-  (merge (Track. nil nil nil nil nil nil nil) field-map))
+(defvar- track-from-map (partial record-from-map Track 7))
 
 ;;;;;;;;;; User ;;;;;;;;;;
 
-(defn- user-from-map [field-map]
-  (merge (User. nil nil nil) field-map))
+(defvar- user-from-map (partial record-from-map User 3))
 
-(defn- user-from-name [user-name]
-  (user-from-map {:name user-name}))
+(defn- user-from-name [user-name] (user-from-map {:name user-name}))
 
 (comment
 
