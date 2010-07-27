@@ -3,11 +3,10 @@
            (java.text SimpleDateFormat)
            (java.util TimeZone))
   (:use [clj-lastfm.filecache]
-        [clojure.contrib.def :only (defstruct- defvar-)]
-        [clojure.contrib.json.read :only (read-json)]
+        [clojure.contrib.def :only (defvar-)]
+        [clojure.contrib.json :only (read-json)]
         [clojure.contrib.logging]
-        [clojure.contrib.math :only (ceil)]
-        [clojure.walk :only (keywordize-keys)]))
+        [clojure.contrib.math :only (ceil)]))
 
 ;;;;;;;;;; Basic ;;;;;;;;;;
 
@@ -101,7 +100,7 @@
 
 (defn- get-data [params]
   (let [url (create-url params)
-        data (-> url get-url read-json keywordize-keys)]
+        data (-> url get-url read-json)]
     (if (-> data :error nil?)
       data
       (throw (IllegalArgumentException. (-> data :message str))))))
@@ -177,35 +176,52 @@
     #(hash-map search-key (-> % :results :opensearch:Query :searchTerms))
     parse-unpaged-fn get-fn))
 
+
+;;;;;;;;;; record defs ;;;;;;;;;;
+
+(defrecord Tag [name url])
+
+(defrecord Bio [published summary content])
+
+(defrecord Location [latitude longitude street postalcode city country])
+
+(defrecord Venue [id name location url website phonenumber])
+
+(defrecord Event [id title artists headliner venue start description
+  attendence reviews tag url website cancelled tags])
+
+(defrecord Shout [body author date])
+
+(defrecord Artist [name url mbid streamable listeners playcount bio])
+
+(defrecord Album [name id url mbid artist playcount])
+
+(defrecord Track
+  [name url mbid artist playcount listeners streamable])
+
+(defrecord User [name url realname])
+
 ;;;;;;;;;; forward declaration ;;;;;;;;;;
 
-(declare bio-struct artist-struct tag-struct album-struct user-struct
-  track-struct event-struct venue-struct location-struct shout-struct)
-
-(declare artist-from-name tag-from-name user-from-name)
+(declare artist-from-name tag-from-name user-from-name
+  album-from-map user-from-map track-from-map)
 
 ;;;;;;;;;; Bio/Wiki ;;;;;;;;;;
-
-(defstruct- bio-struct :published :summary :content)
 
 (defn- parse-bio [data]
   (do
     (debug (str "parse-bio: " data))
-    (struct
-      bio-struct
+    (Bio.
       (-> data :published parse-date)
       (data :summary)
       (data :content))))
 
 ;;;;;;;;;; Location ;;;;;;;;;;
 
-(defstruct- location-struct
-  :latitude :longitude :street :postalcode :city :country)
-
 (defn- parse-location [data]
   (do
     (debug (str "parse-location: " data))
-    (struct location-struct
+    (Location.
       (-> data :geo:point :geo:lat safe-parse-double)
       (-> data :geo:point :geo:long safe-parse-double)
       (data :street)
@@ -215,13 +231,10 @@
 
 ;;;;;;;;;; Venue ;;;;;;;;;;
 
-(defstruct- venue-struct
-  :id :name :location :url :website :phonenumber)
-
 (defn- parse-venue [data]
   (do
     (debug (str "parse-venue: " data))
-    (struct venue-struct
+    (Venue.
       (data :id)
       (data :name)
       (-> data :location parse-location)
@@ -230,10 +243,6 @@
       (data :phonenumber))))
 
 ;;;;;;;;;; Event ;;;;;;;;;;
-
-(defstruct- event-struct
-  :id :title :artists :headliner :venue :start :description
-  :attendence :reviews :tag :url :website :cancelled :tags)
 
 (defvar- parse-event-artists
   (create-parse-string-or-list-fn
@@ -246,7 +255,7 @@
 (defn- parse-event [data]
   (do
     (debug (str "parse-event: " data))
-    (struct event-struct
+    (Event.
       (data :id)
       (data :title)
       (parse-event-artists data)
@@ -264,26 +273,20 @@
 
 ;;;;;;;;;; Shout ;;;;;;;;;;
 
-(defstruct- shout-struct :body :author :date)
-
 (defn- parse-shout [data]
   (do
     (debug (str "parse-shout: " data))
-    (struct shout-struct
+    (Shout.
       (data :body)
       (-> data :author user-from-name)
       (-> data :date parse-date))))
 
 ;;;;;;;;;; Artist ;;;;;;;;;;
 
-(defstruct- artist-struct
-  :name :url :mbid :streamable :listeners :playcount :bio)
-
 (defn- parse-artist [data]
   (do
     (debug (str "parse-artist: " data))
-    (struct
-      artist-struct
+    (Artist.
       (data :name)
       (data :url)
       (data :mbid)
@@ -292,8 +295,10 @@
       (-> data :stats :playcount safe-parse-int)
       (-> data :bio parse-bio))))
 
-(defn- artist-from-name [artst-name]
-  (struct-map artist-struct :name artst-name))
+(defn- artist-from-map [field-map]
+  (merge (Artist. nil nil nil nil nil nil nil) field-map))
+
+(defn- artist-from-name [artist-name] (artist-from-map {:name artist-name}))
 
 ;;;;;;;;;; artist.getinfo ;;;;;;;;;;
 
@@ -328,12 +333,12 @@
 ;;;;;;;;;; artist.getsimilar ;;;;;;;;;;
 
 (defn- parse-artist-similar-1 [data]
-  (struct-map artist-struct
-    :name (data :name)
-    :url (data :url)
-    :mbid (data :mbid)
-    :streamable (-> data :streamable str-1?)
-    :match (-> data :match safe-parse-double)))
+  (artist-from-map
+    {:name (data :name)
+     :url (data :url)
+     :mbid (data :mbid)
+     :streamable (-> data :streamable str-1?)
+     :match (-> data :match safe-parse-double)}))
 
 (defvar- parse-artist-similar
   (create-parse-one-or-more-fn
@@ -362,7 +367,7 @@
 
 (defvar- parse-artist-toptags
   (create-parse-one-or-more-fn
-    #(struct tag-struct (% :name) (% :url))
+    #(Tag. (% :name) (% :url))
     #(-> % :toptags :tag)))
 
 (defvar- get-artist-toptags
@@ -380,16 +385,16 @@
 ;;;;;;;;;; artist.gettopalbums ;;;;;;;;;;
 
 (defn- parse-artist-topalbums-1 [data]
-  (struct-map album-struct
-    :name (data :name)
-    :url (data :url)
-    :mbid (data :mbid)
-    :artist (struct-map artist-struct
-              :name (-> data :artist :name)
-              :url (-> data :artist :url)
-              :mbid (-> data :artist :mbid))
-    :playcount (-> data :playcount safe-parse-int)
-    :rank (-> data attr-kw :rank safe-parse-int)))
+  (album-from-map
+    {:name (data :name)
+     :url (data :url)
+     :mbid (data :mbid)
+     :artist (artist-from-map
+              {:name (-> data :artist :name)
+               :url (-> data :artist :url)
+               :mbid (-> data :artist :mbid)})
+     :playcount (-> data :playcount safe-parse-int)
+     :rank (-> data attr-kw :rank safe-parse-int)}))
 
 (defvar- parse-artist-topalbums
   (create-parse-one-or-more-fn
@@ -410,11 +415,11 @@
 ;;;;;;;;;; artist.gettopfans ;;;;;;;;;;
 
 (defn- parse-artist-topfans-1 [data]
-  (struct-map user-struct
-    :name (data :name)
-    :url (data :url)
-    :realname (data :realname)
-    :weight (-> data :weight safe-parse-int)))
+  (user-from-map
+    {:name (data :name)
+     :url (data :url)
+     :realname (data :realname)
+     :weight (-> data :weight safe-parse-int)}))
 
 (defvar- parse-artist-topfans
   (create-parse-one-or-more-fn
@@ -435,18 +440,18 @@
 ;;;;;;;;;; artist.gettoptracks ;;;;;;;;;;
 
 (defn- parse-artist-toptracks-1 [data]
-  (struct-map track-struct
-    :name (data :name)
-    :url (data :url)
-    :mbid (data :mbid)
-    :artist (struct-map artist-struct
-              :name (-> data :artist :name)
-              :url (-> data :artist :url)
-              :mbid (-> data :artist :mbid))
-    :playcount (-> data :playcount safe-parse-int)
-    :listeners (-> data :listeners safe-parse-int)
-    :streamable (-> data :streamable text-kw str-1?)
-    :streamable-full (-> data :streamable :fulltrack str-1?)))
+  (track-from-map
+    {:name (data :name)
+     :url (data :url)
+     :mbid (data :mbid)
+     :artist (artist-from-map
+              {:name (-> data :artist :name)
+               :url (-> data :artist :url)
+               :mbid (-> data :artist :mbid)})
+     :playcount (-> data :playcount safe-parse-int)
+     :listeners (-> data :listeners safe-parse-int)
+     :streamable (-> data :streamable text-kw str-1?)
+     :streamable-full (-> data :streamable :fulltrack str-1?)}))
 
 (defvar- parse-artist-toptracks
   (create-parse-one-or-more-fn
@@ -544,11 +549,11 @@
 
 (defvar- parse-artist-search-unpaged
   (create-parse-one-or-more-fn
-    #(struct-map artist-struct
-        :name (% :name)
-        :url (% :url)
-        :mbid (% :mbid)
-        :streamable (-> % :streamable str-1?))
+    #(artist-from-map
+        {:name (% :name)
+         :url (% :url)
+         :mbid (% :mbid)
+         :streamable (-> % :streamable str-1?)})
     #(-> % :results :artistmatches :artist)))
 
 (defvar- parse-artist-search
@@ -564,7 +569,8 @@
 
 ;;;;;;;;;; Album ;;;;;;;;;;
 
-(defstruct- album-struct :name :id :url :mbid :artist :playcount)
+(defn- album-from-map [field-map]
+  (merge (Album. nil nil nil nil nil nil) field-map))
 
 ;;;;;;;;;; album.search ;;;;;;;;;;
 
@@ -572,12 +578,12 @@
 
 (defvar- parse-album-search-unpaged
   (create-parse-one-or-more-fn
-    #(struct-map album-struct
-        :name (% :name)
-        :url (% :url)
-        :id (-> % :id safe-parse-int)
-        :artist (-> % :artist artist-from-name)
-        :streamable (-> % :streamable str-1?))
+    #(album-from-map
+        {:name (% :name)
+         :url (% :url)
+         :id (-> % :id safe-parse-int)
+         :artist (-> % :artist artist-from-name)
+         :streamable (-> % :streamable str-1?)})
     #(-> % :results :albummatches :album)))
 
 (defvar- parse-album-search
@@ -593,22 +599,21 @@
 
 ;;;;;;;;;; Tag ;;;;;;;;;;
 
-(defstruct- tag-struct :name :url)
-
 (defn- tag-from-name [tag-name]
-  (struct tag-struct tag-name (lastfm-url (str "/tag/" tag-name))))
+  (Tag. tag-name (lastfm-url (str "/tag/" tag-name))))
 
 ;;;;;;;;;; Track ;;;;;;;;;;
 
-(defstruct- track-struct
-  :name :url :mbid :artist :playcount :listeners :streamable)
+(defn- track-from-map [field-map]
+  (merge (Track. nil nil nil nil nil nil nil) field-map))
 
 ;;;;;;;;;; User ;;;;;;;;;;
 
-(defstruct- user-struct :name :url :realname)
+(defn- user-from-map [field-map]
+  (merge (User. nil nil nil) field-map))
 
 (defn- user-from-name [user-name]
-  (struct-map user-struct :name user-name))
+  (user-from-map {:name user-name}))
 
 (comment
 

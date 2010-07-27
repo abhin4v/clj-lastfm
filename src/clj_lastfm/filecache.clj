@@ -1,6 +1,6 @@
 (ns clj-lastfm.filecache
   (:import (java.io File))
-  (:use [clojure.contrib.duck-streams]
+  (:use [clojure.contrib.duck-streams :only (reader copy)]
         [clojure.contrib.logging]))
 
 (def default-cache-dir (File. (System/getProperty "java.io.tmpdir")))
