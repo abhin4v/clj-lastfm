@@ -3,10 +3,12 @@
            (java.text SimpleDateFormat)
            (java.util TimeZone))
   (:use [clj-lastfm.filecache]
+        [clojure.contrib.core :only (-?> -?>>)]
         [clojure.contrib.def :only (defvar-)]
         [clojure.contrib.json :only (read-json)]
         [clojure.contrib.logging]
-        [clojure.contrib.math :only (ceil)]))
+        [clojure.contrib.math :only (ceil)]
+        [clojure.string :only (blank? trim)]))
 
 ;;;;;;;;;; Basic ;;;;;;;;;;
 
@@ -45,25 +47,31 @@
 
 (defn- str-1? [n] (-> n safe-parse-int (= 1)))
 
-(defn- blank? [s] (every? #(Character/isWhitespace #^Character %) s))
-
 (defn- struct? [obj] (instance? clojure.lang.PersistentStructMap obj))
 
-(def #^{:private true :tag SimpleDateFormat} sdftz
+(def #^{:private true :tag SimpleDateFormat} full-date-format
   (doto (SimpleDateFormat. "EEE, dd MMMM yyyy HH:mm:ss +0000")
     (.setTimeZone (TimeZone/getTimeZone "GMT"))))
 
-(def #^{:private true :tag SimpleDateFormat} sdf
+(def #^{:private true :tag SimpleDateFormat} date-format-wo-tz
   (doto (SimpleDateFormat. "EEE, dd MMMM yyyy HH:mm:ss")
+    (.setTimeZone (TimeZone/getTimeZone "GMT"))))
+
+(def #^{:private true :tag SimpleDateFormat} short-date-format-wo-tz
+  (doto (SimpleDateFormat. "dd MMM yyyy, HH:mm")
     (.setTimeZone (TimeZone/getTimeZone "GMT"))))
 
 (defn- parse-date [date-str]
   (if (some #(% date-str) [nil? blank?])
     nil
-    (try
-      (.parse sdftz date-str)
-      (catch java.text.ParseException e
-        (.parse sdf date-str)))))
+    (let [clean-date-str (trim date-str)]
+      (try
+        (.parse full-date-format clean-date-str)
+        (catch java.text.ParseException e
+          (try
+            (.parse date-format-wo-tz clean-date-str)
+            (catch java.text.ParseException e
+              (.parse short-date-format-wo-tz clean-date-str))))))))
 
 (defn- remove-nil-values [m]
   (apply hash-map (apply concat (filter #(-> % fnext nil? not) m))))
@@ -193,7 +201,8 @@
 
 (defrecord Artist [name url mbid streamable listeners playcount bio])
 
-(defrecord Album [name id url mbid artist playcount])
+(defrecord Album
+  [name id url mbid artist listeners playcount release-date wiki])
 
 (defrecord Track
   [name url mbid artist playcount listeners streamable])
@@ -573,7 +582,75 @@
 
 ;;;;;;;;;; Album ;;;;;;;;;;
 
-(defvar- album-from-map (partial record-from-map Album 6))
+(defvar- album-from-map (partial record-from-map Album 9))
+
+(defn- parse-album [data]
+  (merge
+    (Album.
+      (:name data)
+      (-> data :id safe-parse-int)
+      (:url data)
+      (:mbid data)
+      (-> data :artist artist-from-name)
+      (-> data :listeners safe-parse-int)
+      (-> data :playcount safe-parse-int)
+      (-> data :releasedate parse-date)
+      (-?> data :wiki parse-bio))
+    {:user-playcount
+      (-?> data :userplaycount safe-parse-int)}))
+
+;;;;;;;;;; album.getinfo ;;;;;;;;;;
+
+(defn- parse-album-getinfo [data-fn]
+  (let [data (data-fn)]
+    (do
+      (debug (str "parse-album-getinfo: " data))
+      (-> data :album parse-album))))
+
+(defvar- get-album
+  (create-get-obj-fn {:method "album.getinfo"} parse-album-getinfo))
+
+(defmulti album-info
+  (fn [arg1 & rest-args]
+    (cond
+      (instance? Album arg1) :album
+      (mbid? arg1) :mbid
+      (and (string? arg1)
+           (-?>> rest-args first (instance? Artist))) :album-name-artist
+      :else :album-name-artist-name)))
+
+(defmethod album-info :album
+  ([album]
+    (album-info album nil nil))
+  ([album username]
+    (album-info album username nil))
+  ([album username lang]
+    (album-info (-> album :name) (-> album :artist) username lang)))
+
+(defmethod album-info :mbid
+  ([mbid]
+    (album-info mbid nil nil))
+  ([mbid username]
+    (album-info mbid username nil))
+  ([mbid username lang]
+    (get-album {:mbid mbid :username username :lang lang})))
+
+(defmethod album-info :album-name-artist
+  ([album-name artist]
+    (album-info album-name artist nil nil))
+  ([album-name artist username]
+    (album-info album-name artist username nil))
+  ([album-name artist username lang]
+    (album-info album-name (:name artist) username lang)))
+
+(defmethod album-info :album-name-artist-name
+  ([album-name artist-name]
+    (album-info album-name artist-name nil nil))
+  ([album-name artist-name username]
+    (album-info album-name artist-name username nil))
+  ([album-name artist-name username lang]
+    (get-album
+      {:album album-name :artist artist-name :username username :lang lang})))
 
 ;;;;;;;;;; album.gettoptags ;;;;;;;;;;
 
@@ -620,8 +697,11 @@
   (create-paged-get-obj-fn
     {:method "album.search"} parse-album-search))
 
-(defn album-search [album-name]
+(defn album-search
+  ([album-name]
     (get-album-search {:album album-name}))
+  ([album-name limit]
+    (get-album-search {:album album-name :limit limit})))
 
 ;;;;;;;;;; Tag ;;;;;;;;;;
 
